@@ -416,6 +416,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastApplied = -1
 
 	rf.lastHeartbeat = time.Now()
+	
+	majority := int(len(peers) / 2) 
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
@@ -423,76 +425,89 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// timeout
 	electionTimeout := time.Duration(rand.Int31n(40)+60) * 10 * time.Millisecond
 	boardcastTimeout := 100 * time.Millisecond
+	
+	appendEntries := func (){
+		for{
+			time.Sleep(boardcastTimeout)
+
+			if !rf.killed() {
+				// LEADER
+				if term, isleader := rf.GetState(); isleader {
+					wg := sync.WaitGroup{}
+					for idx, _ := range rf.peers {
+						wg.Add(1)
+						// 客户端并发发送
+						go func(idx int) {
+							if idx != rf.me {
+								req := &AppendEntriesRequest{
+									term:         term,
+									leaderId:     me,
+									prevLogIndex: -1,
+									preLogTerm:   -1,
+									entries:      nil,
+									leaderCommit: -1,
+								}
+								reply := &AppendEntriesReply{}
+								if ok := rf.sendAppendEntries(idx, req, reply); ok {
+									//TODO DO WITH REPLAY
+								}
+							}
+							wg.Done()
+						}(idx)
+					}
+					wg.Wait()
+				}else{
+					return
+				}
+			} else{
+				return
+			}
+		}
+		
+	}
 
 	// heartbeat
 	go func() {
 		for {
-			time.Sleep(boardcastTimeout)
-			go func() {
-				if !rf.killed() {
-					// LEADER
-					wg := sync.WaitGroup{}
-					if term, isleader := rf.GetState(); isleader {
-						for idx, _ := range rf.peers {
-							wg.Add(1)
-							go func(idx int) {
-								if idx != rf.me {
-									req := &AppendEntriesRequest{
-										term:         term,
-										leaderId:     me,
-										prevLogIndex: -1,
-										preLogTerm:   -1,
-										entries:      nil,
-										leaderCommit: -1,
-									}
-									reply := &AppendEntriesReply{}
-									if ok := rf.sendAppendEntries(idx, req, reply); ok {
-										//TODO DO WITH REPLAY
+			time.Sleep(10 * time.Millisecond)
+
+			// CANDIDATE
+			if time.Now().Sub(rf.lastHeartbeat) > electionTimeout {
+				vote := 1
+				rf.currentTerm += 1
+				wg := sync.WaitGroup{}
+
+				for idx, _ := range rf.peers {
+					wg.Add(1)
+					go func(idx int) {
+						if idx != rf.me {
+							req := &RequestVoteArgs{
+								term:         rf.currentTerm,
+								candidateId:  rf.me,
+								lastLogIndex: -1,
+								lastLogTerm:  -1,
+							}
+							reply := &RequestVoteReply{}
+							if ok := rf.sendRequestVote(idx, req, reply); ok {
+								if reply.voteGranted {
+									vote += 1
+								} else {
+									if reply.term > rf.currentTerm {
+										rf.currentTerm = reply.term
 									}
 								}
-								wg.Done()
-							}(idx)
-
-						}
-						wg.Wait()
-					} else {
-						// CANDIDATE
-						if time.Now().Sub(rf.lastHeartbeat) > electionTimeout {
-							vote := 1
-							rf.currentTerm += 1
-							wg := sync.WaitGroup{}
-
-							for idx, _ := range rf.peers {
-								wg.Add(1)
-								go func(idx int) {
-									if idx != rf.me {
-										req := &RequestVoteArgs{
-											term:         rf.currentTerm,
-											candidateId:  rf.me,
-											lastLogIndex: -1,
-											lastLogTerm:  -1,
-										}
-										reply := &RequestVoteReply{}
-										if ok := rf.sendRequestVote(idx, req, reply); ok {
-											if reply.voteGranted {
-												vote += 1
-											} else {
-												if reply.term > rf.currentTerm {
-													rf.currentTerm = reply.term
-												}
-											}
-										}
-									}
-									wg.Done()
-								}(idx)
 							}
-							wg.Wait()
 						}
-
-					}
-
+						wg.Done()
+					}(idx)
 				}
-			}()
+				wg.Wait()
+
+				if vote > majority{
+					rf.leader = me
+					appendEntries()
+				}
+			}
 		}
 	}()
 
