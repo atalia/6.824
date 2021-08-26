@@ -492,6 +492,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// electionTimeout = 600 ms - 1000ms
 	electionTimeout := time.Duration(rand.Int31n(40)+60) * 10 * time.Millisecond
+	fmt.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
 
@@ -579,7 +580,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	requestVote := func(){
 		// CANDIDATE
-		if time.Now().Sub(rf.lastHeartbeat) > electionTimeout {
+		if !rf.killed() && time.Since(rf.lastHeartbeat) > electionTimeout {
+			fmt.Println(rf.me, " lastHeartbeat ", time.Since(rf.lastHeartbeat))
 			rf.lastHeartbeat = time.Now()
 			rf.votedFor = me
 			vote := 1
@@ -587,7 +589,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			
 			wg := sync.WaitGroup{}
 
-			for idx, _ := range rf.peers {
+			for idx := range rf.peers {
 				wg.Add(1)
 				go func(idx int) {
 					if idx != rf.me {
@@ -601,6 +603,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						if ok := rf.sendRequestVote(idx, req, reply); ok {
 							if reply.VoteGranted {
 								vote += 1
+								fmt.Println("GOT IT")
 							} else {
 								if reply.Term > rf.currentTerm {
 									rf.currentTerm = reply.Term
