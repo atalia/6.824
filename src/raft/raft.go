@@ -20,10 +20,11 @@ package raft
 import (
 	"bytes"
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-
+	"fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -156,7 +157,10 @@ func (rf *Raft) readPersist(data []byte) {
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
-		rf.logs = logs
+		if logs == nil {
+			rf.logs = make([]LogEntry, 0)
+		}
+		
 	}
 }
 
@@ -263,7 +267,7 @@ type AppendEntriesRequest struct {
 	Term         int
 	LeaderId     int
 	PrevLogIndex int
-	PreLogTerm   int
+	PrevLogTerm   int
 	Entries      []LogEntry
 
 	LeaderCommit int
@@ -277,7 +281,7 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
+	// fmt.Println(rf.me, " AppendEntries ", args)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
@@ -298,7 +302,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		firstLogEntry := rf.logs[0]
 		offset = args.PrevLogIndex - firstLogEntry.Index
 		// 日志不匹配
-		if rf.logs[offset].Term != args.PreLogTerm {
+		if rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
 			return
@@ -325,21 +329,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		if rf.commitIndex > startCommitIndex {
 			startCommitIndex = rf.commitIndex
 		}
-
-		for _, logEntry := range rf.logs[startCommitIndex:rf.commitIndex] {
-			rf.applyCh <- ApplyMsg{
-				CommandValid: true,
-				Command:      logEntry.Command,
-				CommandIndex: logEntry.Index,
+		if commitIndex >= startCommitIndex{
+			for _, logEntry := range rf.logs[startCommitIndex:commitIndex] {
+				rf.applyCh <- ApplyMsg{
+					CommandValid: true,
+					Command:      logEntry.Command,
+					CommandIndex: logEntry.Index,
+				}
 			}
+			rf.commitIndex = commitIndex
 		}
-
-		rf.commitIndex = commitIndex
+		
+	
 	}
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
 
+	// fmt.Println(rf.me, " log ", rf.logs)
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesRequest, reply *AppendEntriesReply) bool {
@@ -365,11 +372,33 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	index := -1
 	term := -1
 	isLeader := true
-
+	
 	// Your code here (2B).
+	if rf.killed(){
+		return index, term, false
+	}
+	
+	term, isLeader = rf.GetState()
+	if !isLeader{
+		return index, term, isLeader
+	} 
+	
+	rf.mu.Lock()
+	// lastLogEntry := rf.logs[len(rf.logs) - 1]
+	rf.matchIndex[rf.me] += 1
+	index = rf.matchIndex[rf.me]
 
+	rf.logs = append(rf.logs, LogEntry{
+		Term: rf.currentTerm,
+		Index: rf.matchIndex[rf.me],
+		Command: command,	
+	})
+	
+	rf.mu.Unlock()
+	
 	return index, term, isLeader
 }
+
 
 //
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -390,6 +419,45 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+// 返回全局IDX log在logs中的相对位置（防止snapshot截断）
+func findLogEntryPositionWithIndex(entries []LogEntry, idx int) int {
+	if entries == nil || len(entries) == 0 {
+		return -1
+	}
+
+	firstLogEntry := entries[0]
+	return idx - firstLogEntry.Index
+}
+
+// 寻找idx logEntry 上一个term 第一个log idx
+func findPriorTermFirstLogEntry(entries []LogEntry, idx int) int{
+	pos := findLogEntryPositionWithIndex(entries, idx)
+	if pos == -1 {
+		return 0
+	}
+	// 当前idx的LogEntry
+	term := entries[pos].Term
+
+	for pos = pos - 1;pos >=0 && entries[pos].Term == term; pos--{
+
+	}
+
+	if pos < 0 {
+		// TODO snapshot
+		return 0
+	}
+
+	// 先前term 的LogEntry
+	term = entries[pos].Term
+	for ;pos >=0 && entries[pos].Term == term; pos--{
+		
+	}
+	pos = pos + 1
+
+	return pos
+
 }
 
 //
@@ -414,7 +482,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leader = -1
 	rf.commitIndex = -1
 	rf.lastApplied = -1
-	
+	rf.logs = make([]LogEntry, 0)
 	rf.lastHeartbeat = time.Now()
 
 	majority := int(len(peers) / 2)
@@ -436,26 +504,66 @@ func Make(peers []*labrpc.ClientEnd, me int,
 					rf.lastHeartbeat = time.Now()
 					if term, isleader := rf.GetState(); isleader {
 						wg := sync.WaitGroup{}
-						for idx, _ := range rf.peers {
+						for peer, _ := range rf.peers {
 							wg.Add(1)
-							// 客户端并发发送
-							go func(idx int) {
-								if idx != rf.me {
+							// Follower并发发送
+							go func(peer int) {
+								if peer != rf.me {
+									nextIndex := rf.nextIndex[peer]
+									prevLogIndex := -1
+									prevLogTerm := -1
+									if nextIndex > 0 {
+										prevLogEntry := rf.logs[nextIndex - 1]
+										prevLogIndex = prevLogEntry.Index
+										prevLogTerm = prevLogEntry.Term
+									}
+									
+									entries := make([]LogEntry, 0)
+									if nextIndex >= 0 {
+										entries = rf.logs[nextIndex:]
+									}
+									
 									req := &AppendEntriesRequest{
 										Term:         term,
 										LeaderId:     me,
-										PrevLogIndex: -1,
-										PreLogTerm:   -1,
-										Entries:      nil,
-										LeaderCommit: -1,
+										PrevLogIndex: prevLogIndex,
+										PrevLogTerm:   prevLogTerm,
+										Entries:      entries,
+										LeaderCommit: rf.commitIndex,
 									}
 									reply := &AppendEntriesReply{}
-									if ok := rf.sendAppendEntries(idx, req, reply); ok {
+									if ok := rf.sendAppendEntries(peer, req, reply); ok {
 										//TODO DO WITH REPLAY
+										if reply.Success {
+											// 心跳
+											if req.Entries == nil || len(req.Entries) == 0{
+												
+											}else{
+												// 常规append
+												lastLogEntry := req.Entries[len(req.Entries) - 1]
+												// 相对位置
+												rf.matchIndex[peer] =  findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index)
+												rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+												// 更新commitID
+												tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
+												sort.Ints(tmp)
+												rf.commitIndex = tmp[len(tmp) / 2]
+											}
+											
+										} else{
+											// term 非最大即非leader
+											if reply.Term > rf.currentTerm {
+												return
+											}
+											// log 问题
+											lastLogEntry := req.Entries[len(req.Entries) - 1]
+											// 相对位置
+											rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, lastLogEntry.Index)
+										}
 									}
 								}
 								wg.Done()
-							}(idx)
+							}(peer)
 						}
 						wg.Wait()
 					} else { // 不是leader 不需要发送
@@ -508,8 +616,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			if vote > majority {
 				rf.leader = me
 				// TODO log对齐
-				rf.nextIndex = make([]int, 0)
-				rf.matchIndex = make([]int, 0)
+				if rf.nextIndex == nil {
+					rf.nextIndex = make([]int, len(rf.peers))
+				}
+				for idx := range rf.nextIndex{
+					nextIndex := 0
+					if len(rf.logs) > 0 {
+						lastLogEntry := rf.logs[len(rf.logs) - 1]
+						nextIndex = lastLogEntry.Index
+					}
+					rf.nextIndex[idx] = nextIndex
+				}
+
+				if rf.matchIndex == nil {
+					rf.matchIndex = make([]int, len(rf.peers))
+					rf.matchIndex[rf.me] = - 1
+					if len(rf.logs) > 1{
+						rf.matchIndex[rf.me] = rf.logs[len(rf.logs) - 1].Index
+					}
+				}
 				go appendEntries()
 			}
 		}
@@ -519,8 +644,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go func() {
 		for {
 			time.Sleep(10 * time.Millisecond)
-			requestVote()
-			
+			requestVote()	
 		}
 	}()
 
