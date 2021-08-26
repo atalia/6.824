@@ -46,8 +46,8 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	term    int
-	index   int
+	Term    int
+	Index   int
 	Command interface{}
 }
 
@@ -166,10 +166,10 @@ func (rf *Raft) readPersist(data []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	term         int
-	candidateId  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -178,8 +178,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -190,9 +190,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	// Your code here (2A, 2B).
-	if args.term < rf.currentTerm || (args.term == rf.currentTerm && rf.votedFor == -1) {
-		reply.term = rf.currentTerm
-		reply.voteGranted = false
+	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1) {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
 		return
 	}
 
@@ -202,22 +202,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if len(rf.logs) > 0 {
 		logEntry := rf.logs[len(rf.logs)-1]
-		lastLogTerm = logEntry.term
-		lastLogIndex = logEntry.index
+		lastLogTerm = logEntry.Term
+		lastLogIndex = logEntry.Index
 	}
 
-	if args.lastLogTerm < lastLogTerm || args.lastLogTerm == args.lastLogTerm && args.lastLogIndex < lastLogIndex {
-		reply.term = rf.currentTerm
-		reply.voteGranted = false
+	if args.LastLogTerm < lastLogTerm || args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
 		return
 	}
 
 	// 接受
-	rf.votedFor = args.candidateId
-	rf.currentTerm = args.term
+	rf.votedFor = args.CandidateId
+	rf.currentTerm = args.Term
 
-	reply.voteGranted = true
-	reply.term = rf.currentTerm
+	reply.VoteGranted = true
+	reply.Term = rf.currentTerm
 
 	if !rf.killed() {
 		rf.lastHeartbeat = time.Now()
@@ -260,31 +260,31 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type AppendEntriesRequest struct {
-	term         int
-	leaderId     int
-	prevLogIndex int
-	preLogTerm   int
-	entries      []LogEntry
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PreLogTerm   int
+	Entries      []LogEntry
 
-	leaderCommit int
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
-	term    int
-	success bool
+	Term    int
+	Success bool
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	if args.term < rf.currentTerm {
-		reply.success = false
-		reply.term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+		reply.Term = rf.currentTerm
 		return
 	}
 	// 此时变follower
-	rf.leader = args.leaderId
+	rf.leader = args.LeaderId
 	rf.votedFor = -1
 
 	if !rf.killed() {
@@ -296,27 +296,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	if len(rf.logs) > 0 {
 		// 防止snapshot发生过截断
 		firstLogEntry := rf.logs[0]
-		offset = args.prevLogIndex - firstLogEntry.index
+		offset = args.PrevLogIndex - firstLogEntry.Index
 		// 日志不匹配
-		if rf.logs[offset].term != args.preLogTerm {
-			reply.success = false
-			reply.term = rf.currentTerm
+		if rf.logs[offset].Term != args.PreLogTerm {
+			reply.Success = false
+			reply.Term = rf.currentTerm
 			return
 		}
 	}
 
 	// 匹配后开始拼接新的日志
-	if args.entries != nil && len(args.entries) > 0 {
-		rf.logs = append(rf.logs[offset+1:], args.entries...)
+	if args.Entries != nil && len(args.Entries) > 0 {
+		rf.logs = append(rf.logs[offset+1:], args.Entries...)
 		rf.persist()
 	}
 
 	// apply service
-	if rf.commitIndex < args.leaderCommit {
+	if rf.commitIndex < args.LeaderCommit {
 
 		lastLogEntryIndex := len(rf.logs) - 1
 
-		commitIndex := args.leaderCommit
+		commitIndex := args.LeaderCommit
 		if commitIndex < lastLogEntryIndex {
 			commitIndex = lastLogEntryIndex
 		}
@@ -330,15 +330,15 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 			rf.applyCh <- ApplyMsg{
 				CommandValid: true,
 				Command:      logEntry.Command,
-				CommandIndex: logEntry.index,
+				CommandIndex: logEntry.Index,
 			}
 		}
 
 		rf.commitIndex = commitIndex
 	}
 
-	reply.success = true
-	reply.term = rf.currentTerm
+	reply.Success = true
+	reply.Term = rf.currentTerm
 
 }
 
@@ -414,100 +414,113 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.leader = -1
 	rf.commitIndex = -1
 	rf.lastApplied = -1
-
-	rf.lastHeartbeat = time.Now()
 	
-	majority := int(len(peers) / 2) 
+	rf.lastHeartbeat = time.Now()
+
+	majority := int(len(peers) / 2)
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// timeout
+	// electionTimeout = 600 ms - 1000ms
 	electionTimeout := time.Duration(rand.Int31n(40)+60) * 10 * time.Millisecond
+	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
-	
-	appendEntries := func (){
-		for{
-			time.Sleep(boardcastTimeout)
 
-			if !rf.killed() {
-				// LEADER
-				if term, isleader := rf.GetState(); isleader {
-					wg := sync.WaitGroup{}
-					for idx, _ := range rf.peers {
-						wg.Add(1)
-						// 客户端并发发送
-						go func(idx int) {
-							if idx != rf.me {
-								req := &AppendEntriesRequest{
-									term:         term,
-									leaderId:     me,
-									prevLogIndex: -1,
-									preLogTerm:   -1,
-									entries:      nil,
-									leaderCommit: -1,
+	appendEntries := func() {
+		for {
+			time.Sleep(boardcastTimeout)
+			go func() {
+				if !rf.killed() {
+					// LEADER
+					rf.lastHeartbeat = time.Now()
+					if term, isleader := rf.GetState(); isleader {
+						wg := sync.WaitGroup{}
+						for idx, _ := range rf.peers {
+							wg.Add(1)
+							// 客户端并发发送
+							go func(idx int) {
+								if idx != rf.me {
+									req := &AppendEntriesRequest{
+										Term:         term,
+										LeaderId:     me,
+										PrevLogIndex: -1,
+										PreLogTerm:   -1,
+										Entries:      nil,
+										LeaderCommit: -1,
+									}
+									reply := &AppendEntriesReply{}
+									if ok := rf.sendAppendEntries(idx, req, reply); ok {
+										//TODO DO WITH REPLAY
+									}
 								}
-								reply := &AppendEntriesReply{}
-								if ok := rf.sendAppendEntries(idx, req, reply); ok {
-									//TODO DO WITH REPLAY
-								}
-							}
-							wg.Done()
-						}(idx)
+								wg.Done()
+							}(idx)
+						}
+						wg.Wait()
+					} else { // 不是leader 不需要发送
+						return
 					}
-					wg.Wait()
-				}else{
+				} else { // server killed 不需要发送
 					return
 				}
-			} else{
-				return
+			}()
+		}
+
+	}
+
+	requestVote := func(){
+		// CANDIDATE
+		if time.Now().Sub(rf.lastHeartbeat) > electionTimeout {
+			rf.lastHeartbeat = time.Now()
+			rf.votedFor = me
+			vote := 1
+			rf.currentTerm += 1
+			
+			wg := sync.WaitGroup{}
+
+			for idx, _ := range rf.peers {
+				wg.Add(1)
+				go func(idx int) {
+					if idx != rf.me {
+						req := &RequestVoteArgs{
+							Term:         rf.currentTerm,
+							CandidateId:  rf.me,
+							LastLogIndex: -1,
+							LastLogTerm:  -1,
+						}
+						reply := &RequestVoteReply{}
+						if ok := rf.sendRequestVote(idx, req, reply); ok {
+							if reply.VoteGranted {
+								vote += 1
+							} else {
+								if reply.Term > rf.currentTerm {
+									rf.currentTerm = reply.Term
+								}
+							}
+						}
+					}
+					wg.Done()
+				}(idx)
+			}
+			wg.Wait()
+
+			if vote > majority {
+				rf.leader = me
+				// TODO log对齐
+				rf.nextIndex = make([]int, 0)
+				rf.matchIndex = make([]int, 0)
+				go appendEntries()
 			}
 		}
-		
 	}
 
 	// heartbeat
 	go func() {
 		for {
 			time.Sleep(10 * time.Millisecond)
-
-			// CANDIDATE
-			if time.Now().Sub(rf.lastHeartbeat) > electionTimeout {
-				vote := 1
-				rf.currentTerm += 1
-				wg := sync.WaitGroup{}
-
-				for idx, _ := range rf.peers {
-					wg.Add(1)
-					go func(idx int) {
-						if idx != rf.me {
-							req := &RequestVoteArgs{
-								term:         rf.currentTerm,
-								candidateId:  rf.me,
-								lastLogIndex: -1,
-								lastLogTerm:  -1,
-							}
-							reply := &RequestVoteReply{}
-							if ok := rf.sendRequestVote(idx, req, reply); ok {
-								if reply.voteGranted {
-									vote += 1
-								} else {
-									if reply.term > rf.currentTerm {
-										rf.currentTerm = reply.term
-									}
-								}
-							}
-						}
-						wg.Done()
-					}(idx)
-				}
-				wg.Wait()
-
-				if vote > majority{
-					rf.leader = me
-					appendEntries()
-				}
-			}
+			requestVote()
+			
 		}
 	}()
 
