@@ -19,12 +19,14 @@ package raft
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-	"fmt"
+
+	// "fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -194,11 +196,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 
 	// Your code here (2A, 2B).
+	// term 比自身小或者 一样的term时，已经投票了
 	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1) {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
 		return
 	}
+
+	// term 比自身大时
+	rf.currentTerm = args.Term
+	rf.leader = -1
 
 	// 日志比较
 	lastLogTerm := -1
@@ -210,6 +217,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		lastLogIndex = logEntry.Index
 	}
 
+	// term 高，但是日志短
 	if args.LastLogTerm < lastLogTerm || args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
@@ -279,74 +287,103 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesReply) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	// fmt.Println(rf.me, " AppendEntries ", args)
+	// 更新最后一次心跳时间
+	if rf.killed() {
+		return
+	}
+	
+	// fmt.Println("follower ", rf.me, " receive AppendEntries")
+
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+
+	rf.lastHeartbeat = time.Now()
+	
+	// fmt.Println("server ", rf.me, "logs ", rf.logs)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
 		return
 	}
+
 	// 此时变follower
 	rf.leader = args.LeaderId
 	rf.votedFor = -1
+	
+	// fmt.Println("follower ", rf.me, "logs ", rf.logs)
 
-	if !rf.killed() {
-		rf.lastHeartbeat = time.Now()
-	}
-
-	offset := -1
+	rf.commitIndex = args.LeaderCommit
+	offset := 0
 
 	if len(rf.logs) > 0 {
 		// 防止snapshot发生过截断
 		firstLogEntry := rf.logs[0]
+		
+		// 相对位置
 		offset = args.PrevLogIndex - firstLogEntry.Index
+
 		// 日志不匹配
 		if rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
+			fmt.Printf("follower %v log not match", rf.me)
 			return
 		}
 	}
 
 	// 匹配后开始拼接新的日志
 	if args.Entries != nil && len(args.Entries) > 0 {
-		rf.logs = append(rf.logs[offset+1:], args.Entries...)
-		rf.persist()
-	}
-
-	// apply service
-	if rf.commitIndex < args.LeaderCommit {
-
-		lastLogEntryIndex := len(rf.logs) - 1
-
-		commitIndex := args.LeaderCommit
-		if commitIndex < lastLogEntryIndex {
-			commitIndex = lastLogEntryIndex
-		}
-
-		startCommitIndex := 0
-		if rf.commitIndex > startCommitIndex {
-			startCommitIndex = rf.commitIndex
-		}
-		if commitIndex >= startCommitIndex{
-			for _, logEntry := range rf.logs[startCommitIndex:commitIndex] {
-				rf.applyCh <- ApplyMsg{
-					CommandValid: true,
-					Command:      logEntry.Command,
-					CommandIndex: logEntry.Index,
-				}
-			}
-			rf.commitIndex = commitIndex
+		if offset + 1 > cap(rf.logs) {
+			rf.logs = append(rf.logs[:], args.Entries...)
+		}else {
+			rf.logs = append(rf.logs[: offset +1], args.Entries...)
 		}
 		
-	
+		rf.persist()
 	}
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
+	// fmt.Println("follower ", rf.me, " AppendEntries finish...")
+	go rf.CommitLog()
+}
 
-	// fmt.Println(rf.me, " log ", rf.logs)
+func (rf *Raft) CommitLog() {
+	// rf.mu.Lock()
+	// defer rf.mu.Unlock()
+	// fmt.Println("server ", rf.me, " commit logs ")
+	if len(rf.logs) == 0 || rf.commitIndex == rf.lastApplied { // no update
+		return
+	} else{ // update service 
+
+		lastLogEntry := rf.logs[len(rf.logs) - 1]
+		
+		// find last log entry can commit
+		commitIndexEnd := lastLogEntry.Index
+
+		if commitIndexEnd > rf.commitIndex{
+			commitIndexEnd = rf.commitIndex
+		} 
+		
+		for rf.lastApplied < commitIndexEnd {
+			willApplied := rf.lastApplied + 1
+			
+			pos := rf.findLogEntryPositionWithIndex(willApplied)
+			if pos < 0 {
+				// TODO snapshot 
+				return
+			}
+			logEntry := rf.logs[pos]
+			
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      logEntry.Command,
+				CommandIndex: logEntry.Index + 1,
+			}
+			rf.lastApplied = rf.lastApplied + 1
+		}
+		// fmt.Println("server ", rf.me, " commit logs ok ")
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesRequest, reply *AppendEntriesReply) bool {
@@ -387,16 +424,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// lastLogEntry := rf.logs[len(rf.logs) - 1]
 	rf.matchIndex[rf.me] += 1
 	index = rf.matchIndex[rf.me]
-
-	rf.logs = append(rf.logs, LogEntry{
+	
+	rf.logs = append(rf.logs[: len(rf.logs)], LogEntry{
 		Term: rf.currentTerm,
 		Index: rf.matchIndex[rf.me],
 		Command: command,	
 	})
-	
+	// fmt.Println("leader ", rf.me, "logs ", rf.logs)
 	rf.mu.Unlock()
 	
-	return index, term, isLeader
+	return index + 1, term, isLeader
 }
 
 
@@ -421,6 +458,10 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft)  findLogEntryPositionWithIndex(idx int) int{
+	return findLogEntryPositionWithIndex(rf.logs, idx)
+}
+
 // 返回全局IDX log在logs中的相对位置（防止snapshot截断）
 func findLogEntryPositionWithIndex(entries []LogEntry, idx int) int {
 	if entries == nil || len(entries) == 0 {
@@ -430,6 +471,7 @@ func findLogEntryPositionWithIndex(entries []LogEntry, idx int) int {
 	firstLogEntry := entries[0]
 	return idx - firstLogEntry.Index
 }
+
 
 // 寻找idx logEntry 上一个term 第一个log idx
 func findPriorTermFirstLogEntry(entries []LogEntry, idx int) int{
@@ -477,6 +519,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.applyCh = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
 	rf.leader = -1
@@ -492,7 +535,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// electionTimeout = 600 ms - 1000ms
 	electionTimeout := time.Duration(rand.Int31n(40)+60) * 10 * time.Millisecond
-	fmt.Println(rf.me, " election Timeout ", electionTimeout)
+	// fmt.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
 
@@ -521,7 +564,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 									
 									entries := make([]LogEntry, 0)
 									if nextIndex >= 0 {
-										entries = rf.logs[nextIndex:]
+										entries = append(entries, rf.logs[nextIndex:]...)
 									}
 									
 									req := &AppendEntriesRequest{
@@ -532,6 +575,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 										Entries:      entries,
 										LeaderCommit: rf.commitIndex,
 									}
+									// fmt.Printf("leader %v send to %v %v\n", me, peer, req)
 									reply := &AppendEntriesReply{}
 									if ok := rf.sendAppendEntries(peer, req, reply); ok {
 										//TODO DO WITH REPLAY
@@ -545,10 +589,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												// 相对位置
 												rf.matchIndex[peer] =  findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index)
 												rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+												// fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
 												// 更新commitID
 												tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
 												sort.Ints(tmp)
 												rf.commitIndex = tmp[len(tmp) / 2]
+												go rf.CommitLog()
 											}
 											
 										} else{
@@ -581,7 +627,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	requestVote := func(){
 		// CANDIDATE
 		if !rf.killed() && time.Since(rf.lastHeartbeat) > electionTimeout {
-			fmt.Println(rf.me, " lastHeartbeat ", time.Since(rf.lastHeartbeat))
+			fmt.Println(rf.me, " since lastHeartbeat ", time.Since(rf.lastHeartbeat))
 			rf.lastHeartbeat = time.Now()
 			rf.votedFor = me
 			vote := 1
@@ -593,6 +639,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				wg.Add(1)
 				go func(idx int) {
 					if idx != rf.me {
+
 						req := &RequestVoteArgs{
 							Term:         rf.currentTerm,
 							CandidateId:  rf.me,
@@ -603,7 +650,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 						if ok := rf.sendRequestVote(idx, req, reply); ok {
 							if reply.VoteGranted {
 								vote += 1
-								fmt.Println("GOT IT")
+								// fmt.Println(rf.me, " get granted from " , idx)
 							} else {
 								if reply.Term > rf.currentTerm {
 									rf.currentTerm = reply.Term
