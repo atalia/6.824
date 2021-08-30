@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fmt"
+	// "fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -343,7 +343,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		}else {
 			rf.logs = append(rf.logs[: offset + 1], args.Entries...)
 		}
-		fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
+		// fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
 		rf.persist()
 	}
 
@@ -464,6 +464,14 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) Lock() {
+	rf.mu.Lock()
+}
+
+func (rf *Raft) Unlock(){
+	rf.mu.Unlock()
 }
 
 func (rf *Raft)  findLogEntryPositionWithIndex(idx int) int{
@@ -606,8 +614,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 													rf.commitIndex = commitIndex
 													// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
 												}
-												
-												go rf.CommitLog()
+												rf.Lock()
+												rf.CommitLog()
+												rf.Unlock()
 											}
 											
 										} else{
