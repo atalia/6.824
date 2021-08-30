@@ -19,14 +19,13 @@ package raft
 
 import (
 	"bytes"
-	"fmt"
 	"math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	// "fmt"
+	"fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -292,19 +291,21 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		return
 	}
 	
-	// fmt.Println("follower ", rf.me, " receive AppendEntries")
+	// fmt.Printf("follower %v receive AppendEntries %+v\n", rf.me,  args)
 
-	// rf.mu.Lock()
-	// defer rf.mu.Unlock()
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	rf.lastHeartbeat = time.Now()
 	
 	// fmt.Println("server ", rf.me, "logs ", rf.logs)
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
+		// fmt.Printf("%v current term %v receive outdate AppendEntries Term %v\n", rf.me, rf.currentTerm, args.Term)
 		return
 	}
+
+	rf.lastHeartbeat = time.Now()
 
 	// 此时变follower
 	rf.leader = args.LeaderId
@@ -312,10 +313,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	
 	// fmt.Println("follower ", rf.me, "logs ", rf.logs)
 
-	rf.commitIndex = args.LeaderCommit
-	offset := 0
+	offset := -1
 
-	if len(rf.logs) > 0 {
+	if args.PrevLogIndex > -1 && len(rf.logs) > 0 {
 		// 防止snapshot发生过截断
 		firstLogEntry := rf.logs[0]
 		
@@ -323,29 +323,36 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		offset = args.PrevLogIndex - firstLogEntry.Index
 
 		// 日志不匹配
-		if rf.logs[offset].Term != args.PrevLogTerm {
+		// fmt.Printf("follower %v receive PrevLogIndex = %v PrevLogTerm = %v, offset = %v, rf.logs %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, offset, rf.logs)
+		if len(rf.logs) -1 < offset || rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			fmt.Printf("follower %v log not match", rf.me)
+			// fmt.Printf("follower %v log not match, PrevLogTerm %v\n", rf.me, args.PrevLogIndex)
 			return
 		}
+		
 	}
 
 	// 匹配后开始拼接新的日志
 	if args.Entries != nil && len(args.Entries) > 0 {
+		// fmt.Printf("follower %v logs %v PrevLogIndex = %v PrevLogTerm = %v offset= %v \n", rf.me, rf.logs, args.PrevLogIndex, args.PrevLogTerm, offset)
+		
 		if offset + 1 > cap(rf.logs) {
+			// fmt.Printf("follower %v offset greater than cap", rf.me)
 			rf.logs = append(rf.logs[:], args.Entries...)
 		}else {
-			rf.logs = append(rf.logs[: offset +1], args.Entries...)
+			rf.logs = append(rf.logs[: offset + 1], args.Entries...)
 		}
-		
+		fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
 		rf.persist()
 	}
 
 	reply.Success = true
 	reply.Term = rf.currentTerm
 	// fmt.Println("follower ", rf.me, " AppendEntries finish...")
-	go rf.CommitLog()
+	rf.commitIndex = args.LeaderCommit
+	// fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
+	rf.CommitLog()
 }
 
 func (rf *Raft) CommitLog() {
@@ -365,14 +372,8 @@ func (rf *Raft) CommitLog() {
 			commitIndexEnd = rf.commitIndex
 		} 
 		
-		for rf.lastApplied < commitIndexEnd {
-			willApplied := rf.lastApplied + 1
+		for pos := rf.findLogEntryPositionWithIndex(rf.lastApplied + 1); pos >= 0 && rf.lastApplied < commitIndexEnd; pos++ {
 			
-			pos := rf.findLogEntryPositionWithIndex(willApplied)
-			if pos < 0 {
-				// TODO snapshot 
-				return
-			}
 			logEntry := rf.logs[pos]
 			
 			rf.applyCh <- ApplyMsg{
@@ -381,6 +382,7 @@ func (rf *Raft) CommitLog() {
 				CommandIndex: logEntry.Index + 1,
 			}
 			rf.lastApplied = rf.lastApplied + 1
+			
 		}
 		// fmt.Println("server ", rf.me, " commit logs ok ")
 	}
@@ -421,16 +423,22 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	} 
 	
 	rf.mu.Lock()
-	// lastLogEntry := rf.logs[len(rf.logs) - 1]
-	rf.matchIndex[rf.me] += 1
-	index = rf.matchIndex[rf.me]
+	if len(rf.logs) > 0{
+		lastLogEntry := rf.logs[len(rf.logs) - 1]
 	
+		// index = rf.matchIndex[rf.me]
+		index = lastLogEntry.Index + 1
+		rf.matchIndex[rf.me] = index
+		rf.nextIndex[rf.me] = index + 1
+	}else{
+		index = 0
+	}
 	rf.logs = append(rf.logs[: len(rf.logs)], LogEntry{
 		Term: rf.currentTerm,
-		Index: rf.matchIndex[rf.me],
+		Index: index,
 		Command: command,	
 	})
-	// fmt.Println("leader ", rf.me, "logs ", rf.logs)
+	// fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
 	rf.mu.Unlock()
 	
 	return index + 1, term, isLeader
@@ -578,7 +586,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 									// fmt.Printf("leader %v send to %v %v\n", me, peer, req)
 									reply := &AppendEntriesReply{}
 									if ok := rf.sendAppendEntries(peer, req, reply); ok {
-										//TODO DO WITH REPLAY
+										
 										if reply.Success {
 											// 心跳
 											if req.Entries == nil || len(req.Entries) == 0{
@@ -593,19 +601,29 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												// 更新commitID
 												tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
 												sort.Ints(tmp)
-												rf.commitIndex = tmp[len(tmp) / 2]
+												commitIndex := tmp[len(tmp) / 2]
+												if commitIndex > rf.commitIndex{
+													rf.commitIndex = commitIndex
+													// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+												}
+												
 												go rf.CommitLog()
 											}
 											
 										} else{
 											// term 非最大即非leader
 											if reply.Term > rf.currentTerm {
+												rf.currentTerm = reply.Term
+												rf.leader = -1
 												return
 											}
-											// log 问题
-											lastLogEntry := req.Entries[len(req.Entries) - 1]
-											// 相对位置
-											rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, lastLogEntry.Index)
+											if len(req.Entries) > 0 {
+												// log 问题
+												lastLogEntry := req.Entries[len(req.Entries) - 1]
+												// 相对位置
+												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, lastLogEntry.Index)
+											}
+											
 										}
 									}
 								}
@@ -627,7 +645,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	requestVote := func(){
 		// CANDIDATE
 		if !rf.killed() && time.Since(rf.lastHeartbeat) > electionTimeout {
-			fmt.Println(rf.me, " since lastHeartbeat ", time.Since(rf.lastHeartbeat))
+			// fmt.Println(rf.me, " since lastHeartbeat ", time.Since(rf.lastHeartbeat))
 			rf.lastHeartbeat = time.Now()
 			rf.votedFor = me
 			vote := 1
@@ -640,16 +658,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 				go func(idx int) {
 					if idx != rf.me {
 
+						lastLogIndex := -1
+						lastLogTerm := -1
+						if rf.logs != nil && len(rf.logs) > 0 {
+							lastLogEntry := rf.logs[len(rf.logs) - 1]
+							lastLogIndex = lastLogEntry.Index
+							lastLogTerm = lastLogEntry.Term
+						}
+						
 						req := &RequestVoteArgs{
 							Term:         rf.currentTerm,
 							CandidateId:  rf.me,
-							LastLogIndex: -1,
-							LastLogTerm:  -1,
+							LastLogIndex: lastLogIndex,
+							LastLogTerm:  lastLogTerm,
 						}
+						// fmt.Printf("candidate %v requestVote to %v req %v\n", rf.me, idx, req)
 						reply := &RequestVoteReply{}
 						if ok := rf.sendRequestVote(idx, req, reply); ok {
 							if reply.VoteGranted {
-								vote += 1
+								if reply.Term == rf.currentTerm {
+									vote += 1
+								}
 								// fmt.Println(rf.me, " get granted from " , idx)
 							} else {
 								if reply.Term > rf.currentTerm {
@@ -680,10 +709,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 				if rf.matchIndex == nil {
 					rf.matchIndex = make([]int, len(rf.peers))
-					rf.matchIndex[rf.me] = - 1
-					if len(rf.logs) > 1{
-						rf.matchIndex[rf.me] = rf.logs[len(rf.logs) - 1].Index
+					for idx := range rf.matchIndex {
+						rf.matchIndex[idx] = -1
 					}
+					// rf.matchIndex[rf.me] = - 1
+					if len(rf.logs) > 0{
+						rf.matchIndex[rf.me] = rf.logs[len(rf.logs) - 1].Index
+					} 
 				}
 				go appendEntries()
 			}
@@ -694,7 +726,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	go func() {
 		for {
 			time.Sleep(10 * time.Millisecond)
-			requestVote()	
+			go requestVote()	
 		}
 	}()
 
