@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	// "fmt"
+	"fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -291,7 +291,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		return
 	}
 	
-	// fmt.Printf("follower %v receive AppendEntries %+v\n", rf.me,  args)
+	fmt.Printf("follower %v receive AppendEntries %+v\n", rf.me,  args)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -351,7 +351,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	reply.Term = rf.currentTerm
 	// fmt.Println("follower ", rf.me, " AppendEntries finish...")
 	rf.commitIndex = args.LeaderCommit
-	// fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
+	fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
 	rf.CommitLog()
 }
 
@@ -382,7 +382,7 @@ func (rf *Raft) CommitLog() {
 				CommandIndex: logEntry.Index + 1,
 			}
 			rf.lastApplied = rf.lastApplied + 1
-			
+			fmt.Printf("server %v commit log %v ok\n", rf.me, logEntry)
 		}
 		// fmt.Println("server ", rf.me, " commit logs ok ")
 	}
@@ -438,7 +438,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Index: index,
 		Command: command,	
 	})
-	// fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
+	fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
 	rf.mu.Unlock()
 	
 	return index + 1, term, isLeader
@@ -603,23 +603,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												// 常规append
 												lastLogEntry := req.Entries[len(req.Entries) - 1]
 												// 相对位置
-												rf.matchIndex[peer] =  findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index)
-												rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-												// fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
-												// 更新commitID
-												tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
-												sort.Ints(tmp)
-												commitIndex := tmp[len(tmp) / 2]
-												if commitIndex > rf.commitIndex{
-													rf.commitIndex = commitIndex
-													// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
-												}
 												rf.Lock()
-												rf.CommitLog()
+												if index := findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index); index > rf.matchIndex[peer]{
+													rf.matchIndex[peer] =  index
+													rf.nextIndex[peer] = rf.matchIndex[peer] + 1
+													// fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
+													// 更新commitID
+													tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
+													sort.Ints(tmp)
+													commitIndex := tmp[len(tmp) / 2]
+													if commitIndex > rf.commitIndex{
+														rf.commitIndex = commitIndex
+														// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+													}
+													rf.CommitLog()
+												}
 												rf.Unlock()
 											}
 											
-										} else{
+										} else{									
 											// term 非最大即非leader
 											if reply.Term > rf.currentTerm {
 												rf.currentTerm = reply.Term
