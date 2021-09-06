@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"fmt"
+	// "fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -291,7 +291,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		return
 	}
 	
-	fmt.Printf("follower %v receive AppendEntries %+v\n", rf.me,  args)
+	// fmt.Printf("follower %v receive AppendEntries %+v\n", rf.me,  args)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -327,8 +327,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		if len(rf.logs) -1 < offset || rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			fmt.Printf("follower %v log not match, PrevLogIndex %v PrevLogTerm %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm)
-			fmt.Printf("follower %v log %v\n", rf.me, rf.logs)
+			// fmt.Printf("follower %v log not match, PrevLogIndex %v PrevLogTerm %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm)
+			// fmt.Printf("follower %v log %v\n", rf.me, rf.logs)
 			return
 		}
 		
@@ -352,7 +352,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	reply.Term = rf.currentTerm
 	// fmt.Println("follower ", rf.me, " AppendEntries finish...")
 	rf.commitIndex = args.LeaderCommit
-	fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
+	// fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
 	rf.CommitLog()
 }
 
@@ -383,7 +383,7 @@ func (rf *Raft) CommitLog() {
 				CommandIndex: logEntry.Index + 1,
 			}
 			rf.lastApplied = rf.lastApplied + 1
-			fmt.Printf("server %v commit log %v ok\n", rf.me, logEntry)
+			// fmt.Printf("server %v commit log %v ok\n", rf.me, logEntry)
 		}
 		// fmt.Println("server ", rf.me, " commit logs ok ")
 	}
@@ -439,7 +439,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Index: index,
 		Command: command,	
 	})
-	fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
+	// fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
 	rf.mu.Unlock()
 	
 	return index + 1, term, isLeader
@@ -551,8 +551,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// electionTimeout = 500 ms - 800ms
-	electionTimeout := time.Duration(rf.me % 30 + 50) * 10 * time.Millisecond
-	fmt.Println(rf.me, " election Timeout ", electionTimeout)
+	electionTimeout := time.Duration(rf.me * 2  % 30 + 50) * 10 * time.Millisecond
+	// fmt.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
 
@@ -599,7 +599,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 										if reply.Success {
 											// 心跳
 											if req.Entries == nil || len(req.Entries) == 0{
-												fmt.Printf("%v receive heartbeat from %v\n", peer, rf.me)
+												// fmt.Printf("%v receive heartbeat from %v\n", peer, rf.me)
 											}else{
 												// 常规append
 												lastLogEntry := req.Entries[len(req.Entries) - 1]
@@ -608,14 +608,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												if index := findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index); index > rf.matchIndex[peer]{
 													rf.matchIndex[peer] =  index
 													rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-													fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
+													// fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
 													// 更新commitID
 													tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
 													sort.Ints(tmp)
 													commitIndex := tmp[len(tmp) / 2]
 													if commitIndex > rf.commitIndex{
 														rf.commitIndex = commitIndex
-														fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+														// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
 														rf.CommitLog()
 													}
 												}
@@ -635,10 +635,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												//lastLogEntry := req.Entries[len(req.Entries) - 1]												
 												firstLogEntry := req.Entries[0]
 												// 相对位置
-												fmt.Printf("leader %v log %v\n", rf.me, rf.logs)
-												fmt.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
+												// fmt.Printf("leader %v log %v\n", rf.me, rf.logs)
+												// fmt.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
 												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, firstLogEntry.Index)
-												fmt.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
+												// fmt.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
 											}
 											
 										}
@@ -690,14 +690,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							LastLogTerm:  lastLogTerm,
 						}
 						
-						fmt.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
+						// fmt.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
 						reply := &RequestVoteReply{}
 						if ok := rf.sendRequestVote(idx, req, reply); ok {
 							if reply.VoteGranted {
 								if reply.Term == rf.currentTerm {
 									vote += 1
 								}
-								fmt.Println(rf.me, " get granted from " , idx)
+								// fmt.Println(rf.me, " get granted from " , idx)
 							} else {
 								if reply.Term > rf.currentTerm {
 									rf.currentTerm = reply.Term
