@@ -19,7 +19,7 @@ package raft
 
 import (
 	"bytes"
-	"math/rand"
+	// "math/rand"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -551,7 +551,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// electionTimeout = 500 ms - 800ms
-	electionTimeout := time.Duration(rand.Int31n(30)+50) * 10 * time.Millisecond
+	electionTimeout := time.Duration(rf.me % 30 + 50) * 10 * time.Millisecond
 	fmt.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
