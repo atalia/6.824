@@ -598,7 +598,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 										if reply.Success {
 											// 心跳
 											if req.Entries == nil || len(req.Entries) == 0{
-												
+												fmt.Printf("%v receive heartbeat from %v\n", peer, rf.me)
 											}else{
 												// 常规append
 												lastLogEntry := req.Entries[len(req.Entries) - 1]
@@ -607,14 +607,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												if index := findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index); index > rf.matchIndex[peer]{
 													rf.matchIndex[peer] =  index
 													rf.nextIndex[peer] = rf.matchIndex[peer] + 1
-													// fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
+													fmt.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
 													// 更新commitID
 													tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
 													sort.Ints(tmp)
 													commitIndex := tmp[len(tmp) / 2]
 													if commitIndex > rf.commitIndex{
 														rf.commitIndex = commitIndex
-														// fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+														fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
 													}
 													rf.CommitLog()
 												}
@@ -630,9 +630,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											}
 											if len(req.Entries) > 0 {
 												// log 问题
-												lastLogEntry := req.Entries[len(req.Entries) - 1]
+												lastLogEntry := req.Entries[len(req.Entries) - 1]												
 												// 相对位置
+												fmt.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
 												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, lastLogEntry.Index)
+												fmt.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
 											}
 											
 										}
@@ -683,14 +685,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							LastLogIndex: lastLogIndex,
 							LastLogTerm:  lastLogTerm,
 						}
-						// fmt.Printf("candidate %v requestVote to %v req %v\n", rf.me, idx, req)
+						
+						fmt.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
 						reply := &RequestVoteReply{}
 						if ok := rf.sendRequestVote(idx, req, reply); ok {
 							if reply.VoteGranted {
 								if reply.Term == rf.currentTerm {
 									vote += 1
 								}
-								// fmt.Println(rf.me, " get granted from " , idx)
+								fmt.Println(rf.me, " get granted from " , idx)
 							} else {
 								if reply.Term > rf.currentTerm {
 									rf.currentTerm = reply.Term
@@ -705,7 +708,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 			if vote > majority {
 				rf.leader = me
-				// TODO log对齐
 				if rf.nextIndex == nil {
 					rf.nextIndex = make([]int, len(rf.peers))
 				}
