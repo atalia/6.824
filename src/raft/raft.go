@@ -327,7 +327,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		if len(rf.logs) -1 < offset || rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
-			// fmt.Printf("follower %v log not match, PrevLogTerm %v\n", rf.me, args.PrevLogIndex)
+			fmt.Printf("follower %v log not match, PrevLogIndex %v PrevLogTerm %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm)
+			fmt.Printf("follower %v log %v\n", rf.me, rf.logs)
 			return
 		}
 		
@@ -549,9 +550,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// electionTimeout = 600 ms - 1000ms
-	electionTimeout := time.Duration(rand.Int31n(40)+60) * 10 * time.Millisecond
-	// fmt.Println(rf.me, " election Timeout ", electionTimeout)
+	// electionTimeout = 500 ms - 800ms
+	electionTimeout := time.Duration(rand.Int31n(30)+50) * 10 * time.Millisecond
+	fmt.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	boardcastTimeout := 100 * time.Millisecond
 
@@ -615,8 +616,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 													if commitIndex > rf.commitIndex{
 														rf.commitIndex = commitIndex
 														fmt.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+														rf.CommitLog()
 													}
-													rf.CommitLog()
 												}
 												rf.Unlock()
 											}
@@ -630,10 +631,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											}
 											if len(req.Entries) > 0 {
 												// log 问题
-												lastLogEntry := req.Entries[len(req.Entries) - 1]												
+												// bug 记录，如果发现不匹配，说明第一个log就不匹配，而不是最后一个log不匹配。
+												//lastLogEntry := req.Entries[len(req.Entries) - 1]												
+												firstLogEntry := req.Entries[0]
 												// 相对位置
+												fmt.Printf("leader %v log %v\n", rf.me, rf.logs)
 												fmt.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
-												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, lastLogEntry.Index)
+												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, firstLogEntry.Index)
 												fmt.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
 											}
 											
