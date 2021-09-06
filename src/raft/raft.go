@@ -25,7 +25,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	// "fmt"
+	"fmt"
 	"../labgob"
 	"../labrpc"
 )
@@ -116,9 +116,11 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+
+	fmt.Printf("%v persist currentTerm=%v votedFor=%v logs=%v\n", rf.me, rf.currentTerm, rf.votedFor, rf.logs)
+
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
-
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
@@ -153,15 +155,17 @@ func (rf *Raft) readPersist(data []byte) {
 	var votedFor int
 	var logs []LogEntry
 
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(logs) != nil {
-
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+		fmt.Printf("%v readPersist error\n", rf.me)
 	} else {
+		fmt.Printf("%v readPersist currentTerm=%v votedFor=%v logs=%v\n", rf.me, currentTerm, votedFor, logs)
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		if logs == nil {
 			rf.logs = make([]LogEntry, 0)
-		}
-		
+		}else{
+			rf.logs = logs
+		}	
 	}
 }
 
@@ -310,7 +314,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	// 此时变follower
 	rf.leader = args.LeaderId
 	rf.votedFor = -1
-	
+	rf.persist()
 	// fmt.Println("follower ", rf.me, "logs ", rf.logs)
 
 	offset := -1
@@ -352,7 +356,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	reply.Term = rf.currentTerm
 	// fmt.Println("follower ", rf.me, " AppendEntries finish...")
 	rf.commitIndex = args.LeaderCommit
-	// fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
+	fmt.Printf("follower %v logs %v\n", rf.me, rf.logs)
 	rf.CommitLog()
 }
 
@@ -383,7 +387,7 @@ func (rf *Raft) CommitLog() {
 				CommandIndex: logEntry.Index + 1,
 			}
 			rf.lastApplied = rf.lastApplied + 1
-			// fmt.Printf("server %v commit log %v ok\n", rf.me, logEntry)
+			fmt.Printf("server %v commit log %v ok\n", rf.me, logEntry)
 		}
 		// fmt.Println("server ", rf.me, " commit logs ok ")
 	}
@@ -439,7 +443,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Index: index,
 		Command: command,	
 	})
-	// fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
+	rf.persist()
+	fmt.Printf("leader %v logs %v\n", rf.me, rf.logs)
 	rf.mu.Unlock()
 	
 	return index + 1, term, isLeader
@@ -627,6 +632,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 											if reply.Term > rf.currentTerm {
 												rf.currentTerm = reply.Term
 												rf.leader = -1
+												rf.persist()
 												return
 											}
 											if len(req.Entries) > 0 {
@@ -637,7 +643,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 												// 相对位置
 												// fmt.Printf("leader %v log %v\n", rf.me, rf.logs)
 												// fmt.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
-												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, firstLogEntry.Index)
+												if firstLogEntry.Index < len(rf.logs){
+													rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, firstLogEntry.Index)
+												}
+												
 												// fmt.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
 											}
 											
@@ -667,7 +676,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			rf.votedFor = me
 			vote := 1
 			rf.currentTerm += 1
-			
+			rf.persist()
 			wg := sync.WaitGroup{}
 
 			for idx := range rf.peers {
@@ -701,6 +710,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 							} else {
 								if reply.Term > rf.currentTerm {
 									rf.currentTerm = reply.Term
+									rf.persist()
 								}
 							}
 						}
