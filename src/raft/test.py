@@ -15,3 +15,6 @@ if __name__ == "__main__":
     pool.join()
     print("wait for task done")
     print("done")
+
+# "go test -run TestPersist22C" 
+# 卡在选取阶段了，因为1时间最短，2，3日志长
