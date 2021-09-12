@@ -254,7 +254,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.lastHeartbeat = time.Now()
 	// 接受
 	rf.votedFor = args.CandidateId
-	rf.currentTerm = args.Term
+	//rf.currentTerm = args.Term
 
 	rf.persist()
 
@@ -337,6 +337,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	// 此时变follower
 	rf.leader = args.LeaderId
 	rf.votedFor = -1
+	// bugfix 如果自身term 小，那么需要更新term
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+	}
 	rf.persist()
 	// log.Println("follower ", rf.me, "logs ", rf.logs)
 
@@ -379,7 +383,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	reply.Term = rf.currentTerm
 	// log.Println("follower ", rf.me, " AppendEntries finish...")
 	rf.commitIndex = args.LeaderCommit
-	// log.Printf("follower %v logs %v\n", rf.me, rf.logs)
+	log.Printf("follower %v logs %v\n", rf.me, rf.logs)
 	rf.CommitLog()
 }
 
@@ -466,7 +470,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		Command: command,
 	})
 	rf.persist()
-	// log.Printf("leader %v logs %v\n", rf.me, rf.logs)
+	log.Printf("leader %v logs %v\n", rf.me, rf.logs)
 
 	return index + 1, term, isLeader
 }
@@ -510,6 +514,9 @@ func (rf *Raft) appendEntries() {
 								prevLogIndex := -1
 								prevLogTerm := -1
 								if nextIndex > 0 {
+									if nextIndex - 1 >= len(rf.logs) {
+										return
+									}
 									prevLogEntry := rf.logs[nextIndex-1]
 									prevLogIndex = prevLogEntry.Index
 									prevLogTerm = prevLogEntry.Term
@@ -531,7 +538,6 @@ func (rf *Raft) appendEntries() {
 								// log.Printf("leader %v send to %v %v\n", me, peer, req)
 								reply := &AppendEntriesReply{}
 								if ok := rf.sendAppendEntries(peer, req, reply); ok {
-
 									if reply.Success {
 										// 心跳
 										if req.Entries == nil || len(req.Entries) == 0 {
@@ -545,12 +551,19 @@ func (rf *Raft) appendEntries() {
 												rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 												// log.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
 												// 更新commitID
+												// Figure 8 注意只能提交当前term的log
 												tmp := append(make([]int, 0, len(rf.matchIndex)), rf.matchIndex...)
 												sort.Ints(tmp)
 												commitIndex := tmp[len(tmp)/2]
 												rf.mu.Lock()
+												commitTerm := -1
+												if commitIdx := findLogEntryPositionWithIndex(rf.logs, commitIndex) ; commitIdx >= 0 {
+													commitLogEntry := rf.logs[commitIdx]
+													commitTerm = commitLogEntry.Term
+												}
+												currentTerm := rf.currentTerm
 												defer rf.mu.Unlock()
-												if commitIndex > rf.commitIndex {
+												if commitIndex > rf.commitIndex && commitTerm == currentTerm{
 													rf.commitIndex = commitIndex
 													// log.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
 													rf.CommitLog()
@@ -630,6 +643,7 @@ func (rf *Raft) requestVote() {
 		}
 
 		wg := sync.WaitGroup{}
+		canBeLeader := true
 		for idx := range rf.peers {
 			wg.Add(1)
 			go func(idx int) {
@@ -643,10 +657,14 @@ func (rf *Raft) requestVote() {
 							if reply.Term == currentTerm {
 								vote += 1
 							}
-							// log.Println(rf.me, " get granted from " , idx)
+							log.Printf("%v get granted from %v Term %v\n" , rf.me, idx, reply.Term)
 						} else {
 							if reply.Term > rf.currentTerm {
+								log.Printf("%v Term %v lower than %v Term %v\n", rf.me, rf.currentTerm, idx, reply.Term)
 								rf.currentTerm = reply.Term
+								rf.votedFor = -1
+								// 不是最大的term绝对不能成为leader	
+								canBeLeader = false
 								rf.persist()
 							}
 						}
@@ -656,10 +674,10 @@ func (rf *Raft) requestVote() {
 			}(idx)
 		}
 		wg.Wait()
+		// rf.voteFor = -1 is necessary?
 		// log.Printf("%v get total %v vote\n", rf.me, vote)
-		if vote > majority {
-			rf.leader = rf.me
-			log.Printf("%v become leader\n", rf.me)
+		if vote > majority && canBeLeader {
+			log.Printf("%v get total %v vote major %v\n", rf.me, vote, majority)
 			if rf.nextIndex == nil {
 				rf.nextIndex = make([]int, len(rf.peers))
 			}
@@ -682,6 +700,10 @@ func (rf *Raft) requestVote() {
 					rf.matchIndex[rf.me] = rf.logs[len(rf.logs)-1].Index
 				}
 			}
+			rf.leader = rf.me
+			rf.votedFor = -1
+			rf.persist()
+			log.Printf("%v become leader Term %v\n", rf.me, rf.currentTerm)
 			go rf.appendEntries()
 		}
 	}
