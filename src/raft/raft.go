@@ -643,7 +643,6 @@ func (rf *Raft) requestVote() {
 		}
 
 		wg := sync.WaitGroup{}
-		canBeLeader := true
 		for idx := range rf.peers {
 			wg.Add(1)
 			go func(idx int) {
@@ -664,7 +663,6 @@ func (rf *Raft) requestVote() {
 								rf.currentTerm = reply.Term
 								rf.votedFor = -1
 								// 不是最大的term绝对不能成为leader	
-								canBeLeader = false
 								rf.persist()
 							}
 						}
@@ -676,8 +674,9 @@ func (rf *Raft) requestVote() {
 		wg.Wait()
 		// rf.voteFor = -1 is necessary?
 		// log.Printf("%v get total %v vote\n", rf.me, vote)
-		if vote > majority && canBeLeader {
-			log.Printf("%v get total %v vote major %v\n", rf.me, vote, majority)
+		// bug：如果上述rpc发生了延迟，rf.currentTerm可能已经升上去了，出现过期的vote。那就会脑裂。
+		if vote > majority && rf.currentTerm == currentTerm {
+			log.Printf("%v get total %v vote major %v Term %v\n", rf.me, vote, majority, currentTerm)
 			if rf.nextIndex == nil {
 				rf.nextIndex = make([]int, len(rf.peers))
 			}
