@@ -2,7 +2,7 @@ import os
 from multiprocessing import Pool
 
 def run(i):
-    ret = os.system("go test --run TestFigure82C > %d.log" %i)
+    ret = os.system("go test --run TestPersist22C > %d.log" %i)
     print("%d done ret = %d" %(i, ret))
     if ret == 0:
         os.system("rm -f %d.log" %i)
