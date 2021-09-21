@@ -25,9 +25,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"log"
+
 	"../labgob"
 	"../labrpc"
-	"log"
 )
 
 var (
@@ -642,9 +643,16 @@ func (rf *Raft) requestVote() {
 			LastLogTerm:  lastLogTerm,
 		}
 
-		wg := sync.WaitGroup{}
+		// waitGroup 如果出现RPC超时会造成无限选举. 所以为了提高效率，这里需要在确定结果的时候及时反馈，不需要等所有的客户端返回结果
+		waitCh := make(chan struct{})
+		
+		var do int32 = 0
+
+		go func(){
+			time.Sleep(10 * time.Second)
+			waitCh <- struct{}{}
+		}()
 		for idx := range rf.peers {
-			wg.Add(1)
 			go func(idx int) {
 				if idx != rf.me {
 					// log.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
@@ -655,27 +663,34 @@ func (rf *Raft) requestVote() {
 						if reply.VoteGranted {
 							if reply.Term == currentTerm {
 								vote += 1
+								if vote == majority + 1 {
+									waitCh <- struct{}{}		
+								}
 							}
-							log.Printf("%v get granted from %v Term %v\n" , rf.me, idx, reply.Term)
+							// log.Printf("%v get granted from %v Term %v\n" , rf.me, idx, reply.Term)
 						} else {
 							if reply.Term > rf.currentTerm {
-								log.Printf("%v Term %v lower than %v Term %v\n", rf.me, rf.currentTerm, idx, reply.Term)
+								// log.Printf("%v Term %v lower than %v Term %v\n", rf.me, rf.currentTerm, idx, reply.Term)
 								rf.currentTerm = reply.Term
 								rf.votedFor = -1
 								// 不是最大的term绝对不能成为leader	
 								rf.persist()
+								waitCh <- struct{}{}
 							}
+							
 						}
 					}
 				}
-				wg.Done()
 			}(idx)
 		}
-		wg.Wait()
+
+		
+		<- waitCh
 		// rf.voteFor = -1 is necessary?
 		// log.Printf("%v get total %v vote\n", rf.me, vote)
 		// bug：如果上述rpc发生了延迟，rf.currentTerm可能已经升上去了，出现过期的vote。那就会脑裂。
-		if vote > majority && rf.currentTerm == currentTerm {
+		
+		if atomic.CompareAndSwapInt32(&do, 0, 1) && vote > majority && rf.currentTerm == currentTerm {
 			log.Printf("%v get total %v vote major %v Term %v\n", rf.me, vote, majority, currentTerm)
 			if rf.nextIndex == nil {
 				rf.nextIndex = make([]int, len(rf.peers))
@@ -702,7 +717,7 @@ func (rf *Raft) requestVote() {
 			rf.leader = rf.me
 			rf.votedFor = -1
 			rf.persist()
-			log.Printf("%v become leader Term %v\n", rf.me, rf.currentTerm)
+			// log.Printf("%v become leader Term %v\n", rf.me, rf.currentTerm)
 			go rf.appendEntries()
 		}
 	}
