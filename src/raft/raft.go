@@ -506,6 +506,7 @@ func (rf *Raft) appendEntries() {
 				rf.lastHeartbeat = time.Now()
 				if term, isleader := rf.GetState(); isleader {
 					wg := sync.WaitGroup{}
+					logs := rf.logs[nextIndex:]
 					for peer, _ := range rf.peers {
 						wg.Add(1)
 						// Follower并发发送
@@ -515,17 +516,17 @@ func (rf *Raft) appendEntries() {
 								prevLogIndex := -1
 								prevLogTerm := -1
 								if nextIndex > 0 {
-									if nextIndex - 1 >= len(rf.logs) {
+									if nextIndex - 1 >= len(logs) {
 										return
 									}
-									prevLogEntry := rf.logs[nextIndex-1]
+									prevLogEntry := logs[nextIndex-1]
 									prevLogIndex = prevLogEntry.Index
 									prevLogTerm = prevLogEntry.Term
 								}
 
 								entries := make([]LogEntry, 0)
 								if nextIndex >= 0 {
-									entries = append(entries, rf.logs[nextIndex:]...)
+									entries = append(entries, logs[nextIndex:]...)
 								}
 
 								req := &AppendEntriesRequest{
@@ -547,7 +548,7 @@ func (rf *Raft) appendEntries() {
 											// 常规append
 											lastLogEntry := req.Entries[len(req.Entries)-1]
 											// 相对位置
-											if index := findLogEntryPositionWithIndex(rf.logs, lastLogEntry.Index); index > rf.matchIndex[peer] {
+											if index := findLogEntryPositionWithIndex(logs, lastLogEntry.Index); index > rf.matchIndex[peer] {
 												rf.matchIndex[peer] = index
 												rf.nextIndex[peer] = rf.matchIndex[peer] + 1
 												// log.Printf("leader %v matchIndex %v nextIndex %v\n", rf.me, rf.matchIndex, rf.nextIndex)
@@ -557,16 +558,16 @@ func (rf *Raft) appendEntries() {
 												sort.Ints(tmp)
 												commitIndex := tmp[len(tmp)/2]
 												rf.mu.Lock()
+												defer rf.mu.Unlock()
 												commitTerm := -1
-												if commitIdx := findLogEntryPositionWithIndex(rf.logs, commitIndex) ; commitIdx >= 0 {
-													commitLogEntry := rf.logs[commitIdx]
+												if commitIdx := findLogEntryPositionWithIndex(logs, commitIndex) ; commitIdx >= 0 {
+													commitLogEntry := logs[commitIdx]
 													commitTerm = commitLogEntry.Term
 												}
 												currentTerm := rf.currentTerm
-												defer rf.mu.Unlock()
 												if commitIndex > rf.commitIndex && commitTerm == currentTerm{
 													rf.commitIndex = commitIndex
-													// log.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
+													log.Printf("leader %v update commitIndex %v\n", rf.me, rf.commitIndex)
 													rf.CommitLog()
 												}
 											}
@@ -588,8 +589,8 @@ func (rf *Raft) appendEntries() {
 											// 相对位置
 											// log.Printf("leader %v log %v\n", rf.me, rf.logs)
 											// log.Printf("leader %v peer %v nextIndex %v Error\n", rf.me, peer, rf.nextIndex[peer])
-											if firstLogEntry.Index < len(rf.logs) {
-												rf.nextIndex[peer] = findPriorTermFirstLogEntry(rf.logs, firstLogEntry.Index)
+											if firstLogEntry.Index < len(logs) {
+												rf.nextIndex[peer] = findPriorTermFirstLogEntry(logs, firstLogEntry.Index)
 											}
 
 											// log.Printf("leader %v peer %v nextIndex change to %v\n", rf.me, peer, rf.nextIndex[peer])
@@ -690,7 +691,7 @@ func (rf *Raft) requestVote() {
 		// log.Printf("%v get total %v vote\n", rf.me, vote)
 		// bug：如果上述rpc发生了延迟，rf.currentTerm可能已经升上去了，出现过期的vote。那就会脑裂。
 		
-		if atomic.CompareAndSwapInt32(&do, 0, 1) && vote > majority && rf.currentTerm == currentTerm {
+		if vote > majority && rf.currentTerm == currentTerm && atomic.CompareAndSwapInt32(&do, 0, 1){
 			log.Printf("%v get total %v vote major %v Term %v\n", rf.me, vote, majority, currentTerm)
 			if rf.nextIndex == nil {
 				rf.nextIndex = make([]int, len(rf.peers))
