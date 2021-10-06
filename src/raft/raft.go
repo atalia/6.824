@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"log"
-
+	"io/ioutil"
 	"../labgob"
 	"../labrpc"
 )
@@ -40,6 +40,7 @@ func init(){
 	source := rand.NewSource(seed)
 	randG = rand.New(source)
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
+	log.SetOutput(ioutil.Discard)
 }
 
 //
@@ -417,7 +418,7 @@ func (rf *Raft) CommitLog() {
 			rf.lastApplied = rf.lastApplied + 1
 			// log.Printf("server %v commit log %v ok\n", rf.me, logEntry)
 		}
-		// log.Println("server ", rf.me, " commit logs ok ")
+		log.Printf("server %v commit logs.id %v ok\n", rf.me, rf.lastApplied)
 	}
 }
 
