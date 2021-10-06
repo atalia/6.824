@@ -26,7 +26,7 @@ import (
 	"time"
 
 	"log"
-	// "io/ioutil"
+	"io/ioutil"
 	"../labgob"
 	"../labrpc"
 )
@@ -42,7 +42,7 @@ func init(){
 	randG = rand.New(source)
 	electionTimeoutSet = make(map[time.Duration]struct{})
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	// log.SetOutput(ioutil.Discard)
+	log.SetOutput(ioutil.Discard)
 }
 
 //
@@ -360,7 +360,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		reply.Term = rf.currentTerm
 		return
 	}
-	
+
 	if args.PrevLogIndex > -1 && len(rf.logs) > 0 {
 		// 防止snapshot发生过截断
 		firstLogEntry := rf.logs[0]
@@ -822,6 +822,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		for {
 			if _, ok := electionTimeoutSet[timeout]; !ok {
 				electionTimeoutSet[timeout] = struct{}{}
+				log.Printf("timeout dumplicate\n")
 				break
 			}
 			timeout = time.Duration(randG.Intn(50) + 30) * 10 * time.Millisecond
