@@ -221,10 +221,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	defer rf.mu.Unlock()
 	// Your code here (2A, 2B).
 	// term 比自身小或者 一样的term时，已经投票了
-	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1) {
+	// bugfix: args.Term == rf.currentTerm 时，有可能rf.votedFor = -1 ,因为之前已经投过票了。投票只会投给term高于自己的term的，等于也不行
+	// 等于的时候，如果判断votedfor = -1 有一种错误在于，选举成功后，votedfor有可能在appendentries term升上去时，置为-1，这时候在发生term投票，就会脑裂
+	if args.Term <= rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		// log.Printf("%v reject vote! votedFor=%v currentTerm=%v, requests=%+v\n", rf.me, rf.votedFor, rf.currentTerm, args)
+		log.Printf("%v reject vote! votedFor=%v currentTerm=%v, requests=%+v\n", rf.me, rf.votedFor, rf.currentTerm, args)
 		return
 	}
 
@@ -248,7 +250,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.LastLogTerm < lastLogTerm || args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex {
 		reply.Term = rf.currentTerm
 		reply.VoteGranted = false
-		// log.Printf("%v reject vote request! lastLogTerm=%v , lastLogIndex=%v, request=%+v\n", rf.me,lastLogTerm, lastLogIndex, args)
+		log.Printf("%v reject vote request! lastLogTerm=%v , lastLogIndex=%v, request=%+v\n", rf.me,lastLogTerm, lastLogIndex, args)
 		return
 	}
 	// 优化：接受时，才更新心跳时间
@@ -262,7 +264,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = true
 	reply.Term = rf.currentTerm
 
-	
+	log.Printf("%v vote for %v at Term %v", rf.me, args.CandidateId, reply.Term)
 }
 
 //
@@ -376,7 +378,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		} else {
 			rf.logs = append(rf.logs[:offset+1], args.Entries...)
 		}
-		log.Printf("follower %v logs %v\n", rf.me, rf.logs)
+		// log.Printf("follower %v logs %v\n", rf.me, rf.logs)
 		rf.persist()
 	}
 
@@ -503,10 +505,11 @@ func (rf *Raft) appendEntries() {
 		go func() {
 			if !rf.killed() {
 				// LEADER
-				rf.lastHeartbeat = time.Now()
 				if term, isleader := rf.GetState(); isleader {
+					rf.lastHeartbeat = time.Now()
 					wg := sync.WaitGroup{}
 					logs := rf.logs
+					currentTerm := rf.currentTerm
 					for peer, _ := range rf.peers {
 						wg.Add(1)
 						// Follower并发发送
@@ -576,10 +579,13 @@ func (rf *Raft) appendEntries() {
 
 									} else {
 										// term 非最大即非leader
-										if reply.Term > rf.currentTerm {
-											rf.currentTerm = reply.Term
-											rf.leader = -1
-											rf.persist()
+										if reply.Term > currentTerm {
+											log.Printf("outdate: leader %v term %v is outdate(peer %v reply.Term %v)", rf.me, currentTerm, peer, reply.Term)
+											if reply.Term > rf.currentTerm{
+												rf.currentTerm = reply.Term
+												rf.leader = -1
+												rf.persist()
+											}
 											return
 										}
 										if len(req.Entries) > 0 {
@@ -657,7 +663,7 @@ func (rf *Raft) requestVote() {
 		for idx := range rf.peers {
 			go func(idx int) {
 				if idx != rf.me {
-					// log.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
+					log.Printf("candidate %v requestVote to %v req %+v\n", rf.me, idx, req)
 					reply := &RequestVoteReply{}
 					if ok := rf.sendRequestVote(idx, req, reply); ok {
 						rf.mu.Lock()
