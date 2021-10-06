@@ -320,7 +320,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		return
 	}
 
-	// log.Printf("follower %v receive AppendEntries %+v\n", rf.me, args)
+	log.Printf("follower %v receive AppendEntries %+v\n", rf.me, args)
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -329,7 +329,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 	if args.Term < rf.currentTerm {
 		reply.Success = false
 		reply.Term = rf.currentTerm
-		// log.Printf("%v current term %v receive outdate AppendEntries Term %v\n", rf.me, rf.currentTerm, args.Term)
+		log.Printf("%v current term %v receive outdate AppendEntries Term %v\n", rf.me, rf.currentTerm, args.Term)
 		return
 	}
 
@@ -376,7 +376,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		} else {
 			rf.logs = append(rf.logs[:offset+1], args.Entries...)
 		}
-		// log.Printf("follower %v logs %v\n", rf.me, rf.logs)
+		log.Printf("follower %v logs %v\n", rf.me, rf.logs)
 		rf.persist()
 	}
 
@@ -506,7 +506,7 @@ func (rf *Raft) appendEntries() {
 				rf.lastHeartbeat = time.Now()
 				if term, isleader := rf.GetState(); isleader {
 					wg := sync.WaitGroup{}
-					logs := rf.logs[nextIndex:]
+					logs := rf.logs
 					for peer, _ := range rf.peers {
 						wg.Add(1)
 						// Follower并发发送
@@ -560,7 +560,8 @@ func (rf *Raft) appendEntries() {
 												rf.mu.Lock()
 												defer rf.mu.Unlock()
 												commitTerm := -1
-												if commitIdx := findLogEntryPositionWithIndex(logs, commitIndex) ; commitIdx >= 0 {
+												// matchIndex 为ref 时，如果响应超时了，matchIdx可能比上下文的log长度大
+												if commitIdx := findLogEntryPositionWithIndex(logs, commitIndex) ; commitIdx >= 0 && commitIdx < len(logs) {
 													commitLogEntry := logs[commitIdx]
 													commitTerm = commitLogEntry.Term
 												}
