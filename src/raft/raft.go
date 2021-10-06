@@ -354,6 +354,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 
 	offset := -1
 
+	// bug: 如果log为空，而args.PrevLogIndex > -1？
+	if args.PrevLogIndex > -1 && len(rf.logs) == 0{
+		reply.Success = false
+		reply.Term = rf.currentTerm
+		return
+	}
+	
 	if args.PrevLogIndex > -1 && len(rf.logs) > 0 {
 		// 防止snapshot发生过截断
 		firstLogEntry := rf.logs[0]
@@ -363,7 +370,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 
 		// 日志不匹配
 		// log.Printf("follower %v receive PrevLogIndex = %v PrevLogTerm = %v, offset = %v, rf.logs %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, offset, rf.logs)
-		if len(rf.logs) - 1 < offset || offset > 0 && rf.logs[offset].Term != args.PrevLogTerm {
+		if offset < -1 || len(rf.logs) - 1 < offset || offset > 0 && rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
 			// log.Printf("follower %v log not match, PrevLogIndex %v PrevLogTerm %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm)
@@ -372,12 +379,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 		}
 
 	}
-
+	
 	// 匹配后开始拼接新的日志
 	if args.Entries != nil && len(args.Entries) > 0 {
 		// log.Printf("follower %v logs %v PrevLogIndex = %v PrevLogTerm = %v offset= %v \n", rf.me, rf.logs, args.PrevLogIndex, args.PrevLogTerm, offset)
 
-		if offset+1 > cap(rf.logs) {
+		if offset + 1 > cap(rf.logs) {
 			// log.Printf("follower %v offset greater than cap", rf.me)
 			rf.logs = append(rf.logs[:], args.Entries...)
 		} else {
