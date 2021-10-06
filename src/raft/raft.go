@@ -26,21 +26,23 @@ import (
 	"time"
 
 	"log"
-	"io/ioutil"
+	// "io/ioutil"
 	"../labgob"
 	"../labrpc"
 )
 
 var (
 	randG *rand.Rand
+	electionTimeoutSet map[time.Duration]struct{}
 )
 
 func init(){
 	seed := time.Now().UnixNano()
 	source := rand.NewSource(seed)
 	randG = rand.New(source)
+	electionTimeoutSet = make(map[time.Duration]struct{})
 	log.SetFlags(log.Lshortfile | log.LstdFlags)
-	log.SetOutput(ioutil.Discard)
+	// log.SetOutput(ioutil.Discard)
 }
 
 //
@@ -139,7 +141,7 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.logs)
-
+	e.Encode(rf.electionTimeout)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -169,13 +171,13 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var logs []LogEntry
-
-	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil {
+	var electionTimeout time.Duration
+	if d.Decode(&currentTerm) != nil || d.Decode(&votedFor) != nil || d.Decode(&logs) != nil || d.Decode(&electionTimeout) != nil{
 		log.Printf("%v readPersist error\n", rf.me)
 	} else {
 		rf.mu.Lock()
 		defer rf.mu.Unlock()
-		// log.Printf("%v readPersist currentTerm=%v votedFor=%v logs=%v\n", rf.me, currentTerm, votedFor, logs)
+		log.Printf("%v readPersist currentTerm=%v votedFor=%v logs=%v\n", rf.me, currentTerm, votedFor, logs)
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		if logs == nil {
@@ -183,6 +185,8 @@ func (rf *Raft) readPersist(data []byte) {
 		} else {
 			rf.logs = logs
 		}
+		log.Printf("%v electionTimeout %v", rf.me, electionTimeout)
+		rf.electionTimeout = electionTimeout
 	}
 }
 
@@ -359,7 +363,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesRequest, reply *AppendEntriesRe
 
 		// 日志不匹配
 		// log.Printf("follower %v receive PrevLogIndex = %v PrevLogTerm = %v, offset = %v, rf.logs %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm, offset, rf.logs)
-		if len(rf.logs)-1 < offset || rf.logs[offset].Term != args.PrevLogTerm {
+		if len(rf.logs) - 1 < offset || offset > 0 && rf.logs[offset].Term != args.PrevLogTerm {
 			reply.Success = false
 			reply.Term = rf.currentTerm
 			// log.Printf("follower %v log not match, PrevLogIndex %v PrevLogTerm %v\n", rf.me, args.PrevLogIndex, args.PrevLogTerm)
@@ -804,13 +808,25 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// electionTimeout = 500 ms - 800ms
+	// electionTimeout = 300 ms - 800ms
 	//rf.electionTimeout = time.Duration(rf.me*2%30+50) * 10 * time.Millisecond
-	rf.electionTimeout = time.Duration(randG.Intn(30) + 40) * 10 * time.Millisecond
+	if rf.electionTimeout == 0{
+		timeout := time.Duration(randG.Intn(50) + 30) * 10 * time.Millisecond
+		for {
+			if _, ok := electionTimeoutSet[timeout]; !ok {
+				electionTimeoutSet[timeout] = struct{}{}
+				break
+			}
+			timeout = time.Duration(randG.Intn(50) + 30) * 10 * time.Millisecond
+		}
+		rf.electionTimeout = timeout
+		rf.persist()
+	}
+	
 	// log.Println(rf.me, " election Timeout ", electionTimeout)
 	// boardcastTimeout = 100 ms
 	rf.boardcastTimeout = 100 * time.Millisecond
-
+	log.Printf("%v electionTimeout %v", rf.me, rf.electionTimeout)
 	// heartbeat
 	go func() {
 		for {
